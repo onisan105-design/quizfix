@@ -14,14 +14,13 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
 
 public class QuizAccessibilityService extends AccessibilityService {
 
     private static final String TAG = "QuizAI";
-    private static final String API_KEY = "sk-proj-bF8vouvtKx0Gj42Bh8Dp7-wRr3HxH3nuL-Xuvfp1nhXSJcrxm4uuq46RoL0Kdnt5Gno2Dq7gQwT3BlbkFJ7yclXABWtuVHMJmxx3ZawfnnwJ2wddycsqZtr4PoZB0ih2NO2C9rBkMOdhYICkX15EMFI7XT4Ahttps://api.openai.com/v1/chat/completions";
+    private static final String API_KEY = "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";
 
     public static QuizAccessibilityService instance;
     private static boolean analyzing = false;
@@ -42,11 +41,10 @@ public class QuizAccessibilityService extends AccessibilityService {
         analyzing = true;
         OverlayService.showToastStatic("Lese Bildschirm...");
 
-        // Text direkt vom Bildschirm lesen - kein Screenshot nötig!
         new Handler(Looper.getMainLooper()).post(() -> {
             try {
                 String screenText = getAllText();
-                Log.d(TAG, "Bildschirm Text: " + screenText);
+                Log.d(TAG, "Text: " + screenText);
 
                 if (screenText.isEmpty()) {
                     OverlayService.showToastStatic("Kein Text gefunden!");
@@ -63,7 +61,6 @@ public class QuizAccessibilityService extends AccessibilityService {
         });
     }
 
-    // Liest ALLEN Text vom aktuellen Bildschirm
     private String getAllText() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return "";
@@ -82,14 +79,13 @@ public class QuizAccessibilityService extends AccessibilityService {
         }
     }
 
-    // Sendet Text an OpenAI
     private void sendToAI(String screenText, int speedMs) {
         try {
             JSONObject message = new JSONObject();
             message.put("role", "user");
             message.put("content",
                 "Du siehst den Text eines Quiz auf einem Handy-Bildschirm.\n" +
-                "Finde die Frage und alle Antwortmöglichkeiten.\n" +
+                "Finde die Frage und alle Antwortmoeglichkeiten.\n" +
                 "Welche Antwort ist richtig?\n\n" +
                 "BILDSCHIRM TEXT:\n" + screenText + "\n\n" +
                 "Antworte NUR als JSON: {\"answer\":\"Exakter Antworttext\",\"confidence\":90}"
@@ -103,7 +99,8 @@ public class QuizAccessibilityService extends AccessibilityService {
             body.put("max_tokens", 150);
             body.put("messages", messages);
 
-            URL url = new URL(API_URL);
+            String apiUrl = "https://api.openai.com/v1/chat/completions";
+            URL url = new URL(apiUrl);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
@@ -134,7 +131,6 @@ public class QuizAccessibilityService extends AccessibilityService {
             OverlayService.showToastStatic("Antwort: " + answer);
             OverlayService.updateResult("✓", answer, conf);
 
-            // Klicke die Antwort
             new Handler(Looper.getMainLooper()).postDelayed(() ->
                 clickAnswer(answer, speedMs), 300);
 
@@ -151,7 +147,7 @@ public class QuizAccessibilityService extends AccessibilityService {
             if (root != null) {
                 boolean clicked = findAndClick(root, answer);
                 if (clicked) {
-                    OverlayService.showToastStatic("✓ Geklickt!");
+                    OverlayService.showToastStatic("Geklickt!");
                     new Handler(Looper.getMainLooper()).postDelayed(this::clickNext, speedMs);
                 } else {
                     OverlayService.showToastStatic("Antwort nicht gefunden!");
@@ -170,14 +166,13 @@ public class QuizAccessibilityService extends AccessibilityService {
         if (t != null) {
             String nodeText = t.toString().toLowerCase().trim();
             String answerLow = answer.toLowerCase().trim();
-            // Prüfe ob Text übereinstimmt (auch teilweise)
-            if (nodeText.contains(answerLow.substring(0, Math.min(10, answerLow.length()))) ||
-                answerLow.contains(nodeText.substring(0, Math.min(10, nodeText.length())))) {
+            int len = Math.min(10, Math.min(nodeText.length(), answerLow.length()));
+            if (len > 0 && (nodeText.contains(answerLow.substring(0, len)) ||
+                answerLow.contains(nodeText.substring(0, len)))) {
                 if (node.isClickable()) {
                     node.performAction(AccessibilityNodeInfo.ACTION_CLICK);
                     return true;
                 }
-                // Versuche Elternelement
                 AccessibilityNodeInfo parent = node.getParent();
                 if (parent != null && parent.isClickable()) {
                     parent.performAction(AccessibilityNodeInfo.ACTION_CLICK);
@@ -194,22 +189,19 @@ public class QuizAccessibilityService extends AccessibilityService {
     private void clickNext() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
-
-        // Suche nach Weiter-Buttons
-        String[] nextWords = {"Weiter", "Next", "OK", "Auflösung", "Fortfahren", "Continue", "→", ">"};
+        String[] nextWords = {"Weiter","Next","OK","Aufloesung","Auflösung","Fortfahren","Continue","Fertig"};
         for (String w : nextWords) {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(w);
             if (nodes != null && !nodes.isEmpty()) {
                 for (AccessibilityNodeInfo n : nodes) {
                     if (n.isClickable()) {
                         n.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                        OverlayService.showToastStatic("→ Weiter!");
+                        OverlayService.showToastStatic("Weiter!");
                         return;
                     }
                 }
             }
         }
-        // Klicke unten auf dem Bildschirm
         float h = getResources().getDisplayMetrics().heightPixels;
         float w = getResources().getDisplayMetrics().widthPixels;
         performClick(w * 0.5f, h * 0.88f);
