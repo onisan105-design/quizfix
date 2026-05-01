@@ -4,10 +4,10 @@ import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.graphics.Bitmap;
 import android.graphics.Path;
-import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
+import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.util.Log;
@@ -42,20 +42,16 @@ public class QuizAccessibilityService extends AccessibilityService {
         instance = null;
     }
 
-    // ── SCREENSHOT → KI → KLICK ───────────────────────────────
-
     public void solveQuiz(int speedMs) {
         if (analyzing) return;
         analyzing = true;
 
-        // Korrekte Android API für takeScreenshot
         takeScreenshot(
-            DEFAULT_DISPLAY,
+            Display.DEFAULT_DISPLAY,
             Executors.newSingleThreadExecutor(),
             new TakeScreenshotCallback() {
                 @Override
                 public void onSuccess(ScreenshotResult result) {
-                    // Bitmap aus ScreenshotResult holen
                     Bitmap bitmap = Bitmap.wrapHardwareBuffer(
                         result.getHardwareBuffer(),
                         result.getColorSpace()
@@ -65,9 +61,7 @@ public class QuizAccessibilityService extends AccessibilityService {
                         analyzing = false;
                         return;
                     }
-                    // Software Bitmap für Verarbeitung
                     Bitmap soft = bitmap.copy(Bitmap.Config.ARGB_8888, false);
-                    Log.d(TAG, "Screenshot: " + soft.getWidth() + "x" + soft.getHeight());
                     new Thread(() -> sendToAI(soft, speedMs)).start();
                 }
 
@@ -81,8 +75,6 @@ public class QuizAccessibilityService extends AccessibilityService {
         );
     }
 
-    // ── KI API ────────────────────────────────────────────────
-
     private void sendToAI(Bitmap bitmap, int speedMs) {
         try {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -92,7 +84,7 @@ public class QuizAccessibilityService extends AccessibilityService {
             String json = "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":200," +
                 "\"messages\":[{\"role\":\"user\",\"content\":[" +
                 "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"" + b64 + "\"}}," +
-                "{\"type\":\"text\",\"text\":\"Quiz-Screenshot analysieren. Welche Antwort ist richtig? Nur JSON antworten: {\\\"letter\\\":\\\"A\\\",\\\"answer\\\":\\\"Text\\\",\\\"confidence\\\":90}\"}" +
+                "{\"type\":\"text\",\"text\":\"Quiz-Screenshot: Welche Antwort ist richtig? Nur JSON: {\\\"letter\\\":\\\"A\\\",\\\"answer\\\":\\\"Text\\\",\\\"confidence\\\":90}\"}" +
                 "]}]}";
 
             URL url = new URL("https://api.anthropic.com/v1/messages");
@@ -119,7 +111,6 @@ public class QuizAccessibilityService extends AccessibilityService {
             String answer = result.getString("answer");
             int conf = result.optInt("confidence", 0);
 
-            Log.d(TAG, "Antwort: " + letter + ") " + answer);
             OverlayService.showToastStatic("KI: " + letter + ") " + answer);
             OverlayService.updateResult(letter, answer, conf);
 
@@ -133,32 +124,21 @@ public class QuizAccessibilityService extends AccessibilityService {
         }
     }
 
-    // ── ANTWORT KLICKEN ───────────────────────────────────────
-
     private void clickAnswer(String letter, String answer, int speedMs) {
         try {
             AccessibilityNodeInfo root = getRootInActiveWindow();
             boolean clicked = false;
-
-            if (root != null) {
-                clicked = findAndClick(root, answer);
-            }
-
+            if (root != null) clicked = findAndClick(root, answer);
             if (!clicked) {
                 int pos = "ABCD".indexOf(letter.toUpperCase());
                 if (pos >= 0) clickByPosition(pos);
             }
-
             OverlayService.showToastStatic("Geklickt: " + letter);
-
-            new Handler(Looper.getMainLooper()).postDelayed(() ->
-                clickNext(), speedMs);
-
+            new Handler(Looper.getMainLooper()).postDelayed(this::clickNext, speedMs);
         } catch (Exception e) {
             Log.e(TAG, "Klick Fehler: " + e.getMessage());
         } finally {
-            new Handler(Looper.getMainLooper()).postDelayed(() ->
-                analyzing = false, speedMs + 2000);
+            new Handler(Looper.getMainLooper()).postDelayed(() -> analyzing = false, speedMs + 2000);
         }
     }
 
@@ -180,33 +160,31 @@ public class QuizAccessibilityService extends AccessibilityService {
     private void clickByPosition(int pos) {
         float h = getResources().getDisplayMetrics().heightPixels;
         float w = getResources().getDisplayMetrics().widthPixels;
-        float y = h * 0.45f + pos * (h * 0.11f);
-        performClick(w * 0.5f, y);
+        performClick(w * 0.5f, h * 0.45f + pos * (h * 0.11f));
     }
 
     private void clickNext() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
-        String[] nextWords = {"Weiter","Next","OK","Fortfahren","Continue","Fertig","Bestätigen"};
-        for (String w : nextWords) {
+        String[] words = {"Weiter","Next","OK","Fortfahren","Continue","Fertig"};
+        for (String w : words) {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(w);
-            if (nodes != null && !nodes.isEmpty()) {
-                AccessibilityNodeInfo n = nodes.get(0);
-                if (n.isClickable()) { n.performAction(AccessibilityNodeInfo.ACTION_CLICK); return; }
+            if (nodes != null && !nodes.isEmpty() && nodes.get(0).isClickable()) {
+                nodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                return;
             }
         }
         float h = getResources().getDisplayMetrics().heightPixels;
-        float ww = getResources().getDisplayMetrics().widthPixels;
-        performClick(ww * 0.5f, h * 0.88f);
+        float w = getResources().getDisplayMetrics().widthPixels;
+        performClick(w * 0.5f, h * 0.88f);
     }
 
     private void performClick(float x, float y) {
         Path p = new Path();
         p.moveTo(x, y);
-        GestureDescription g = new GestureDescription.Builder()
+        dispatchGesture(new GestureDescription.Builder()
             .addStroke(new GestureDescription.StrokeDescription(p, 0, 100))
-            .build();
-        dispatchGesture(g, null, null);
+            .build(), null, null);
     }
 
     public static boolean isRunning() { return instance != null; }
