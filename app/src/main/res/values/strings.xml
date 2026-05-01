@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">QuizAI</string>
+    <string name="accessibility_description">QuizAI macht automatisch Screenshots, analysiert Quiz-Fragen mit KI und klickt die richtige Antwort.</string>
+</resources>

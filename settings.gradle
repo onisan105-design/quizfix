@@ -1,0 +1,2 @@
+rootProject.name = "QuizAI"
+include ':app'
