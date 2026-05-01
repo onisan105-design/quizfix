@@ -10,6 +10,8 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.util.Log;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -29,7 +31,7 @@ public class QuizAccessibilityService extends AccessibilityService {
     public void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
-        Log.d(TAG, "Service verbunden");
+        OverlayService.showToastStatic("QuizAI Service aktiv!");
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {}
@@ -37,25 +39,28 @@ public class QuizAccessibilityService extends AccessibilityService {
     @Override public void onDestroy() { super.onDestroy(); instance = null; }
 
     public void solveQuiz(int speedMs) {
-        if (analyzing) return;
+        if (analyzing) {
+            OverlayService.showToastStatic("Bereits am Arbeiten...");
+            return;
+        }
         analyzing = true;
-        OverlayService.showToastStatic("Lese Bildschirm...");
+        OverlayService.showToastStatic("Schritt 1: Lese Bildschirm...");
 
         new Handler(Looper.getMainLooper()).post(() -> {
             try {
                 String screenText = getAllText();
-                Log.d(TAG, "Text: " + screenText);
 
                 if (screenText.isEmpty()) {
-                    OverlayService.showToastStatic("Kein Text gefunden!");
+                    OverlayService.showToastStatic("FEHLER: Kein Text auf Bildschirm!");
                     analyzing = false;
                     return;
                 }
 
+                OverlayService.showToastStatic("Schritt 2: Sende an KI... (" + screenText.length() + " Zeichen)");
                 Executors.newSingleThreadExecutor().execute(() -> sendToAI(screenText, speedMs));
 
             } catch (Exception e) {
-                Log.e(TAG, "Fehler: " + e.getMessage());
+                OverlayService.showToastStatic("FEHLER: " + e.getMessage());
                 analyzing = false;
             }
         });
@@ -66,7 +71,7 @@ public class QuizAccessibilityService extends AccessibilityService {
         if (root == null) return "";
         StringBuilder sb = new StringBuilder();
         collectText(root, sb);
-        return sb.toString();
+        return sb.toString().trim();
     }
 
     private void collectText(AccessibilityNodeInfo node, StringBuilder sb) {
@@ -84,11 +89,9 @@ public class QuizAccessibilityService extends AccessibilityService {
             JSONObject message = new JSONObject();
             message.put("role", "user");
             message.put("content",
-                "Du siehst den Text eines Quiz auf einem Handy-Bildschirm.\n" +
-                "Finde die Frage und alle Antwortmoeglichkeiten.\n" +
-                "Welche Antwort ist richtig?\n\n" +
-                "BILDSCHIRM TEXT:\n" + screenText + "\n\n" +
-                "Antworte NUR als JSON: {\"answer\":\"Exakter Antworttext\",\"confidence\":90}"
+                "Quiz auf Handy. Welche Antwort ist richtig?\n\n" +
+                "TEXT:\n" + screenText + "\n\n" +
+                "Nur JSON: {\"answer\":\"Antworttext\",\"confidence\":90}"
             );
 
             JSONArray messages = new JSONArray();
@@ -96,25 +99,42 @@ public class QuizAccessibilityService extends AccessibilityService {
 
             JSONObject body = new JSONObject();
             body.put("model", "gpt-4o");
-            body.put("max_tokens", 150);
+            body.put("max_tokens", 100);
             body.put("messages", messages);
 
-            String apiUrl = "https://api.openai.com/v1/chat/completions";
-            URL url = new URL(apiUrl);
+            URL url = new URL("https://api.openai.com/v1/chat/completions");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("Authorization", "Bearer " + API_KEY);
             conn.setDoOutput(true);
-            conn.setConnectTimeout(15000);
+            conn.setConnectTimeout(20000);
             conn.setReadTimeout(30000);
 
             OutputStream os = conn.getOutputStream();
             os.write(body.toString().getBytes(StandardCharsets.UTF_8));
             os.close();
 
-            byte[] resp = conn.getInputStream().readAllBytes();
-            String respStr = new String(resp, StandardCharsets.UTF_8);
+            int responseCode = conn.getResponseCode();
+
+            if (responseCode != 200) {
+                // Fehler lesen
+                BufferedReader br = new BufferedReader(
+                    new InputStreamReader(conn.getErrorStream(), StandardCharsets.UTF_8));
+                StringBuilder errSb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) errSb.append(line);
+                OverlayService.showToastStatic("API Fehler " + responseCode + ": " + errSb.toString().substring(0, Math.min(100, errSb.length())));
+                analyzing = false;
+                return;
+            }
+
+            BufferedReader br = new BufferedReader(
+                new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+            StringBuilder respSb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) respSb.append(line);
+            String respStr = respSb.toString();
 
             JSONObject root = new JSONObject(respStr);
             String text = root.getJSONArray("choices")
@@ -127,16 +147,15 @@ public class QuizAccessibilityService extends AccessibilityService {
             String answer = result.getString("answer");
             int conf = result.optInt("confidence", 0);
 
-            Log.d(TAG, "Antwort: " + answer);
-            OverlayService.showToastStatic("Antwort: " + answer);
+            OverlayService.showToastStatic("Schritt 3: Antwort = " + answer);
             OverlayService.updateResult("✓", answer, conf);
 
             new Handler(Looper.getMainLooper()).postDelayed(() ->
-                clickAnswer(answer, speedMs), 300);
+                clickAnswer(answer, speedMs), 500);
 
         } catch (Exception e) {
-            Log.e(TAG, "AI Fehler: " + e.getMessage());
-            OverlayService.showToastStatic("Fehler: " + e.getMessage());
+            OverlayService.showToastStatic("FEHLER: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            Log.e(TAG, "Fehler", e);
             analyzing = false;
         }
     }
@@ -147,16 +166,19 @@ public class QuizAccessibilityService extends AccessibilityService {
             if (root != null) {
                 boolean clicked = findAndClick(root, answer);
                 if (clicked) {
-                    OverlayService.showToastStatic("Geklickt!");
+                    OverlayService.showToastStatic("Schritt 4: Geklickt!");
                     new Handler(Looper.getMainLooper()).postDelayed(this::clickNext, speedMs);
                 } else {
-                    OverlayService.showToastStatic("Antwort nicht gefunden!");
+                    OverlayService.showToastStatic("Antwort nicht klickbar gefunden!");
                 }
             }
         } catch (Exception e) {
-            Log.e(TAG, "Klick Fehler: " + e.getMessage());
+            OverlayService.showToastStatic("Klick Fehler: " + e.getMessage());
         } finally {
-            new Handler(Looper.getMainLooper()).postDelayed(() -> analyzing = false, speedMs + 2000);
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                analyzing = false;
+                OverlayService.showToastStatic("Fertig! Bereit fuer naechste Frage.");
+            }, speedMs + 2000);
         }
     }
 
@@ -166,7 +188,7 @@ public class QuizAccessibilityService extends AccessibilityService {
         if (t != null) {
             String nodeText = t.toString().toLowerCase().trim();
             String answerLow = answer.toLowerCase().trim();
-            int len = Math.min(10, Math.min(nodeText.length(), answerLow.length()));
+            int len = Math.min(8, Math.min(nodeText.length(), answerLow.length()));
             if (len > 0 && (nodeText.contains(answerLow.substring(0, len)) ||
                 answerLow.contains(nodeText.substring(0, len)))) {
                 if (node.isClickable()) {
@@ -189,14 +211,14 @@ public class QuizAccessibilityService extends AccessibilityService {
     private void clickNext() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
-        String[] nextWords = {"Weiter","Next","OK","Aufloesung","Auflösung","Fortfahren","Continue","Fertig"};
+        String[] nextWords = {"Weiter","Next","OK","Aufloesung","Auflösung","Fortfahren","Continue","Fertig","→"};
         for (String w : nextWords) {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(w);
             if (nodes != null && !nodes.isEmpty()) {
                 for (AccessibilityNodeInfo n : nodes) {
                     if (n.isClickable()) {
                         n.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                        OverlayService.showToastStatic("Weiter!");
+                        OverlayService.showToastStatic("Schritt 5: Weiter!");
                         return;
                     }
                 }
