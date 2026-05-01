@@ -11,6 +11,7 @@ import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.util.Log;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
@@ -23,6 +24,10 @@ import java.util.concurrent.Executors;
 public class QuizAccessibilityService extends AccessibilityService {
 
     private static final String TAG = "QuizAI";
+    // ERSETZE HIER DEINEN NEUEN API KEY:
+    private static final String API_KEY = "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";
+    private static final String API_URL = "https://api.openai.com/v1/chat/completions";
+
     public static QuizAccessibilityService instance;
     private static boolean analyzing = false;
 
@@ -35,12 +40,7 @@ public class QuizAccessibilityService extends AccessibilityService {
 
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {}
     @Override public void onInterrupt() {}
-
-    @Override
-    public void onDestroy() {
-        super.onDestroy();
-        instance = null;
-    }
+    @Override public void onDestroy() { super.onDestroy(); instance = null; }
 
     public void solveQuiz(int speedMs) {
         if (analyzing) return;
@@ -53,9 +53,7 @@ public class QuizAccessibilityService extends AccessibilityService {
                 @Override
                 public void onSuccess(ScreenshotResult result) {
                     Bitmap bitmap = Bitmap.wrapHardwareBuffer(
-                        result.getHardwareBuffer(),
-                        result.getColorSpace()
-                    );
+                        result.getHardwareBuffer(), result.getColorSpace());
                     if (bitmap == null) {
                         OverlayService.showToastStatic("Screenshot leer!");
                         analyzing = false;
@@ -67,7 +65,6 @@ public class QuizAccessibilityService extends AccessibilityService {
 
                 @Override
                 public void onFailure(int errorCode) {
-                    Log.e(TAG, "Screenshot Fehler: " + errorCode);
                     OverlayService.showToastStatic("Screenshot Fehler: " + errorCode);
                     analyzing = false;
                 }
@@ -81,32 +78,58 @@ public class QuizAccessibilityService extends AccessibilityService {
             bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
             String b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
 
-            String json = "{\"model\":\"claude-sonnet-4-20250514\",\"max_tokens\":200," +
-                "\"messages\":[{\"role\":\"user\",\"content\":[" +
-                "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"" + b64 + "\"}}," +
-                "{\"type\":\"text\",\"text\":\"Quiz-Screenshot: Welche Antwort ist richtig? Nur JSON: {\\\"letter\\\":\\\"A\\\",\\\"answer\\\":\\\"Text\\\",\\\"confidence\\\":90}\"}" +
-                "]}]}";
+            // OpenAI GPT-4 Vision API
+            JSONObject imageUrl = new JSONObject();
+            imageUrl.put("url", "data:image/jpeg;base64," + b64);
 
-            URL url = new URL("https://api.anthropic.com/v1/messages");
+            JSONObject imageContent = new JSONObject();
+            imageContent.put("type", "image_url");
+            imageContent.put("image_url", imageUrl);
+
+            JSONObject textContent = new JSONObject();
+            textContent.put("type", "text");
+            textContent.put("text", "Analysiere diesen Quiz-Screenshot. Welche Antwort ist richtig? Antworte NUR als JSON: {\"letter\":\"A\",\"answer\":\"Antworttext\",\"confidence\":90}");
+
+            JSONArray content = new JSONArray();
+            content.put(textContent);
+            content.put(imageContent);
+
+            JSONObject message = new JSONObject();
+            message.put("role", "user");
+            message.put("content", content);
+
+            JSONArray messages = new JSONArray();
+            messages.put(message);
+
+            JSONObject body = new JSONObject();
+            body.put("model", "gpt-4o");
+            body.put("max_tokens", 200);
+            body.put("messages", messages);
+
+            URL url = new URL(API_URL);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Authorization", "Bearer " + API_KEY);
             conn.setDoOutput(true);
             conn.setConnectTimeout(15000);
             conn.setReadTimeout(30000);
 
             OutputStream os = conn.getOutputStream();
-            os.write(json.getBytes(StandardCharsets.UTF_8));
+            os.write(body.toString().getBytes(StandardCharsets.UTF_8));
             os.close();
 
             byte[] resp = conn.getInputStream().readAllBytes();
             String respStr = new String(resp, StandardCharsets.UTF_8);
 
             JSONObject root = new JSONObject(respStr);
-            String text = root.getJSONArray("content").getJSONObject(0).getString("text");
+            String text = root.getJSONArray("choices")
+                .getJSONObject(0)
+                .getJSONObject("message")
+                .getString("content");
             text = text.replace("```json","").replace("```","").trim();
-            JSONObject result = new JSONObject(text);
 
+            JSONObject result = new JSONObject(text);
             String letter = result.getString("letter");
             String answer = result.getString("answer");
             int conf = result.optInt("confidence", 0);
@@ -166,7 +189,7 @@ public class QuizAccessibilityService extends AccessibilityService {
     private void clickNext() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
-        String[] words = {"Weiter","Next","OK","Fortfahren","Continue","Fertig"};
+        String[] words = {"Weiter","Next","OK","Auflösung","Fortfahren","Continue","Fertig"};
         for (String w : words) {
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByText(w);
             if (nodes != null && !nodes.isEmpty() && nodes.get(0).isClickable()) {
